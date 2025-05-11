@@ -6,24 +6,83 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-// MCP Client will be implemented later
-class MockMcpClient {
-  constructor() {
+import axios from 'axios';
+
+class McpClient {
+  constructor({ baseUrl }) {
+    this.baseUrl = baseUrl || 'http://localhost:3000';
     this.connected = false;
+    this.tools = [];
   }
-  
+
   async connect() {
-    this.connected = true;
-    return { success: true };
+    try {
+      // Optionally check server health or fetch tools
+      await this.listTools();
+      this.connected = true;
+      console.log('[McpClient] Connected to MCP server (listTools succeeded)');
+      return { success: true };
+    } catch (err) {
+      // Fallback: allow connection even if listTools fails
+      this.connected = true;
+      console.warn('[McpClient] listTools failed, but setting connected = true for fallback. Error:', err.message);
+      return { success: false, error: err.message };
+    }
   }
-  
+
+  async listTools() {
+    try {
+      // Assume MCP server exposes /tools endpoint or similar
+      const resp = await axios.get(`${this.baseUrl}/resources`);
+      this.tools = resp.data.tools || [];
+      return this.tools;
+    } catch (err) {
+      throw new Error('Failed to list MCP tools: ' + (err.response?.data?.message || err.message));
+    }
+  }
+
   async executeTool(toolName, params) {
-    console.log(`[MOCK] Executing tool: ${toolName}`, params);
-    return { status: 'success', message: 'Mock MCP response' };
+    try {
+      // Map toolName to endpoint (example: get_environments -> /environments)
+      let endpoint = '';
+      let method = 'post';
+      switch(toolName) {
+        case 'get_environments':
+          endpoint = '/environments';
+          method = 'get';
+          break;
+        case 'create_environment':
+          endpoint = '/environments';
+          method = 'put'; // Changed from 'post' to 'put' to match MCP server
+          break;
+        case 'create_loop':
+          endpoint = '/loops'; // Adjust if your MCP server uses a different path
+          method = 'post';
+          break;
+        case 'run_code':
+          endpoint = '/run'; // Adjust as needed
+          method = 'post';
+          break;
+        default:
+          throw new Error('Unknown tool: ' + toolName);
+      }
+      let resp;
+      if (method === 'get') {
+        resp = await axios.get(`${this.baseUrl}${endpoint}`, { params });
+      } else 
+      if (method === 'put') {
+        resp = await axios.put(`${this.baseUrl}${endpoint}`, params);
+      }
+      return resp.data;
+    } catch (err) {
+      // Defensive: Handle JSON and connection errors
+      return { status: 'error', message: err.response?.data?.message || err.message };
+    }
   }
 }
 
-const McpClient = MockMcpClient;
+const mcpClient = new McpClient({ baseUrl: process.env.MCP_SERVER_URL || 'http://localhost:3000' });
+
 import OpenAI from 'openai';
 import winston from 'winston';
 
@@ -70,46 +129,162 @@ if (process.env.OPENAI_API_KEY) {
       apiKey: process.env.OPENAI_API_KEY
     });
     logger.info('OpenAI client initialized successfully');
+    console.log('OpenAI client initialized successfully');
   } catch (error) {
     logger.error('Failed to initialize OpenAI client:', error);
+    console.log('Failed to initialize OpenAI client:', error);
     openai = null;
   }
 } else {
   logger.warn('OpenAI API key not found in environment variables');
+  console.log('OpenAI API key not found in environment variables');
   openai = null;
 }
 
-// Initialize MCP client
-let mcpClient;
-if (process.env.MCP_SERVER_URL) {
-  try {
-    logger.info(`Initializing MCP client with server URL: ${process.env.MCP_SERVER_URL}`);
-    mcpClient = new McpClient({
-      serverUrl: process.env.MCP_SERVER_URL,
-      name: 'huawei-codearts-chatbot',
-      version: '1.0.0'
-    });
-    
-    // Test MCP server connection
-    logger.info('Testing MCP server connection...');
-    mcpClient.connect()
-      .then(() => {
-        logger.info('Successfully connected to MCP server');
-        // Test getting environments
-        return mcpClient.executeTool('get_environments', { limit: 1 });
-      })
-      .then(result => {
-        logger.info('MCP server test successful. Sample environment data:', JSON.stringify(result, null, 2));
-      })
-      .catch(error => {
-        logger.error('MCP server connection test failed:', error);
+// Optionally test MCP server connection on startup
+mcpClient.connect()
+  .then(() => {
+    logger.info('Successfully connected to MCP server');
+    console.log('Successfully connected to MCP server');
+
+    // Move Socket.IO connection handler here
+    io.on('connection', (socket) => {
+      logger.info('New client connected');
+      console.log('New client connected');
+
+      // Handle chat message
+      socket.on('sendMessage', async (message, callback) => {
+        try {
+          // Emit the user's message back to the client
+          io.emit('message', {
+            sender: 'user',
+            text: message,
+            timestamp: new Date().toISOString()
+          });
+
+          let aiResponse = null;
+          let mcpResult = null;
+          let mcpError = null;
+          let toolName = null;
+          let toolParams = null;
+          let shouldRunTool = false;
+
+          let intentJson = null;
+          if (openai) {
+            // Ask OpenAI to extract tool intent and params
+            const toolDetectionPrompt = `You are an assistant for a system that can run the following MCP tools: create_environment, get_environments, create_loop, run_code.
+Given a user message, respond with a JSON object:
+{"tool": <tool_name or null>, "params": <object or null>}
+If the message is a request to use a tool, fill in tool and params; otherwise, both should be null.
+
+User message: "${message}"`;
+            try {
+              const intentResult = await openai.chat.completions.create({
+                model: 'gpt-3.5-turbo',
+                messages: [
+                  { role: 'system', content: 'You are a tool intent extraction assistant.' },
+                  { role: 'user', content: toolDetectionPrompt }
+                ],
+                temperature: 0
+              });
+              intentJson = intentResult.choices[0].message.content;
+              logger.info('OpenAI tool intent extraction raw output:', intentJson);
+              console.log('OpenAI tool intent extraction raw output:', intentJson);
+              // Defensive: parse JSON safely
+              try {
+                const parsed = JSON.parse(intentJson);
+                logger.info('Parsed tool intent:', parsed);
+                console.log('Parsed tool intent:', parsed);
+                if (parsed.tool && typeof parsed.tool === 'string') {
+                  toolName = parsed.tool.trim(); // Normalize toolName
+                  toolParams = parsed.params || {};
+                  shouldRunTool = true;
+                  console.log('After parsing: shouldRunTool:', shouldRunTool, 'toolName:', toolName, 'toolParams:', toolParams);
+                }
+              } catch (err) {
+                logger.warn('Intent extraction returned invalid JSON:', intentJson);
+                console.log('Intent extraction returned invalid JSON:', intentJson);
+                shouldRunTool = false;
+              }
+            } catch (err) {
+              logger.error('Error extracting tool intent:', err);
+              console.log('Error extracting tool intent:', err);
+              shouldRunTool = false;
+            }
+          }
+
+          console.log('Before tool execution: shouldRunTool:', shouldRunTool, 'toolName:', toolName, 'mcpClient.connected:', mcpClient.connected);
+          if (shouldRunTool && mcpClient && mcpClient.connected) {
+            logger.info(`Invoking MCP tool: ${toolName} with params: ${JSON.stringify(toolParams)}`);
+            console.log(`Invoking MCP tool: ${toolName} with params:`, toolParams);
+            try {
+              mcpResult = await mcpClient.executeTool(toolName, toolParams);
+            } catch (err) {
+              mcpError = `Error executing tool: ${err.message}`;
+            }
+            io.emit('message', {
+              sender: 'ai',
+              text: mcpError ? `MCP Error: ${mcpError}` : `MCP Tool Result: ${JSON.stringify(mcpResult, null, 2)}`,
+              timestamp: new Date().toISOString()
+            });
+          } else {
+            if (!shouldRunTool) {
+              logger.info('No MCP tool detected for message. Forwarding to LLM.');
+              console.log('No MCP tool detected for message. Forwarding to LLM.');
+            }
+
+            try {
+              // Get response from OpenAI
+              if (openai) {
+                const completion = await openai.chat.completions.create({
+                  model: 'gpt-3.5-turbo',
+                  messages: [
+                    {
+                      role: 'system',
+                      content: 'You are a helpful assistant integrated with Huawei CodeArts MCP server. ' +
+                              'You help users with questions about Huawei Cloud services, cloud computing, ' +
+                              'and related technologies. Be concise and helpful.'
+                    },
+                    { role: 'user', content: message }
+                  ],
+                  temperature: 0.7,
+                });
+                aiResponse = completion.choices[0].message.content;
+              } else {
+                aiResponse = "I'm currently unable to process your request (OpenAI service not configured). " +
+                            "Please set up your OpenAI API key in the .env file.";
+              }
+            } catch (error) {
+              logger.error('Error getting response from OpenAI:', error);
+              console.log('Error getting response from OpenAI:', error);
+              aiResponse = "I'm sorry, I encountered an error processing your request. Please check the logs for more details.";
+            }
+            io.emit('message', {
+              sender: 'ai',
+              text: aiResponse,
+              timestamp: new Date().toISOString()
+            });
+          }
+          if (callback) callback({ status: 'Message sent' });
+        } catch (error) {
+          console.log('Error processing message:', error);
+          logger.error('Error processing message:', error);
+          console.log('Error processing message:', error);
+          io.emit('error', { message: 'Error processing your message' });
+          if (callback) callback({ status: 'Error', error: error.message });
+        }
       });
-  } catch (error) {
-    logger.error('Failed to initialize MCP client:', error);
-  }
-} else {
-  logger.warn('MCP_SERVER_URL not set. MCP integration will be disabled.');
-}
+
+      socket.on('disconnect', () => {
+        logger.info('Client disconnected');
+        console.log('Client disconnected');
+      });
+    });
+  })
+  .catch((err) => {
+    logger.error('Failed to connect to MCP server:', err);
+    console.log('Failed to connect to MCP server:', err);
+  });
 
 // Middleware
 app.use(cors(corsOptions));
@@ -131,108 +306,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // Socket.IO connection handling
-io.on('connection', (socket) => {
-  logger.info('New client connected');
-
-  // Handle chat message
-  socket.on('sendMessage', async (message, callback) => {
-    try {
-      // Emit the user's message back to the client
-      io.emit('message', { 
-        sender: 'user', 
-        text: message,
-        timestamp: new Date().toISOString()
-      });
-
-      let aiResponse;
-      
-      if (openai) {
-        try {
-          // Get response from OpenAI
-          const completion = await openai.chat.completions.create({
-            model: 'gpt-3.5-turbo',
-            messages: [
-              { 
-                role: 'system', 
-                content: 'You are a helpful assistant integrated with Huawei CodeArts MCP server. ' +
-                        'You help users with questions about Huawei Cloud services, cloud computing, ' +
-                        'and related technologies. Be concise and helpful.'
-              },
-              { role: 'user', content: message }
-            ],
-            temperature: 0.7,
-          });
-          aiResponse = completion.choices[0].message.content;
-        } catch (error) {
-          logger.error('Error getting response from OpenAI:', error);
-          aiResponse = "I'm sorry, I encountered an error processing your request. Please check the logs for more details.";
-        }
-      } else {
-        // Fallback response if OpenAI is not available
-        aiResponse = "I'm currently unable to process your request (OpenAI service not configured). " +
-                    "Please set up your OpenAI API key in the .env file.";
-      }
-      
-      // Emit the AI's response
-      io.emit('message', {
-        sender: 'ai',
-        text: aiResponse,
-        timestamp: new Date().toISOString()
-      });
-
-      // Interact with MCP server if available
-      if (mcpClient && mcpClient.connected) {
-        try {
-          logger.info('Processing message with MCP tools:', message);
-          
-          // Example: If message is about getting environments
-          if (message.toLowerCase().includes('list') && message.toLowerCase().includes('environment')) {
-            const response = await mcpClient.executeTool('get_environments', { limit: 5 });
-            logger.info('Environments from MCP:', JSON.stringify(response, null, 2));
-            
-            // Add environment info to the AI's context
-            if (response && response.length > 0) {
-              aiResponse += "\n\nHere are some environments I found: " + 
-                response.map(env => env.name).join(', ');
-            }
-          }
-          
-          // Example: If message is about creating an environment
-          if (message.toLowerCase().includes('create') && message.toLowerCase().includes('environment')) {
-            // Extract parameters from message (simplified example)
-            const envData = {
-              name: 'New Environment',
-              description: 'Created via chat interface',
-              resource_type: 'CCE',
-              context: {
-                region: 'ap-southeast-3',
-                cluster_id: 'default-cluster'
-              }
-            };
-            const response = await mcpClient.executeTool('create_environment', envData);
-            logger.info('Created environment:', JSON.stringify(response, null, 2));
-            
-            if (response && response.id) {
-              aiResponse += "\n\nSuccessfully created environment with ID: " + response.id;
-            }
-          }
-        } catch (error) {
-          logger.error('Error executing MCP tool:', error);
-        }
-      }
-      
-      if (callback) callback({ status: 'Message sent' });
-    } catch (error) {
-      logger.error('Error processing message:', error);
-      io.emit('error', { message: 'Error processing your message' });
-      if (callback) callback({ status: 'Error', error: error.message });
-    }
-  });
-
-  socket.on('disconnect', () => {
-    logger.info('Client disconnected');
-  });
-});
+// (Moved inside mcpClient.connect().then(...))
 
 // Handle 404
 app.use((req, res) => {
@@ -243,6 +317,7 @@ app.use((req, res) => {
 const PORT = 3001; // Force port 3001 to avoid conflicts
 server.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
   console.log(`Server running on port ${PORT}`);
 });
 

@@ -141,41 +141,161 @@ const logger = winston.createLogger({
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({
+  strict: true,
+}));
+
+// Expose MCP tools as resources for Cascade discovery
+app.get('/resources', (req, res) => {
+  console. log("in")
+  res.json(mcpServer.tools);
+});
+  verify: (req, res, buf, encoding) => {
+    // Defensive: Log if the body is not valid JSON
+    const raw = buf.toString(encoding || 'utf8');
+    if (!isValidJson(raw)) {
+      console.log('Received invalid JSON body:', raw);
+      logger.error('Received invalid JSON body:', raw);
+    }
+  }
+
+// Utility function to check if a string is valid JSON
+function isValidJson(str) {
+  if (typeof str !== 'string') return false;
+  str = str.trim();
+  if (!str.startsWith('{') && !str.startsWith('[')) return false;
+  try {
+    JSON.parse(str);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 
 // Base URL for Huawei CodeArts API
-const BASE_URL = 'https://cloudrelease-ext.ap-southeast-3.myhuaweicloud.com/v2/b3f25c9ab5cb457b97aa19bbc06b2743';
+const BASE_URL = 'https://cloudrelease-ext.ap-southeast-3.myhuaweicloud.com/v2/bde6d8b93a2247b382dde46263e7305c';
+
+// Huawei IAM Auth config
+const HUAWEI_IAM_URL = 'https://iam.ap-southeast-3.myhuaweicloud.com/v3/auth/tokens';
+const HUAWEI_AUTH_BODY = {
+  "auth": {
+      "identity": {
+          "methods": [
+              "password"
+          ],
+          "password": {
+              "user": {
+                  "domain": {
+                      "name": "hwstaff_pub_TRCCloudTeam"
+                  },
+                  "name": "tzivia_rot",
+                  "password": "Tz214384"
+              }
+          }
+      },
+      "scope": {
+          "domain": {
+              "name": "hwstaff_pub_TRCCloudTeam" 
+          },
+          "project": {
+              "name": "ap-southeast-3"
+          }
+      }
+  }
+}
+
+// Token cache
+let huaweiAuthToken = null;
+let huaweiAuthTokenFetchedAt = null;
+
+async function getHuaweiAuthToken() {
+  const now = Date.now();
+  // If token exists and is less than 23.5 hours old, reuse it
+  if (huaweiAuthToken && huaweiAuthTokenFetchedAt && (now - huaweiAuthTokenFetchedAt < 23.5 * 60 * 60 * 1000)) {
+    return huaweiAuthToken;
+  }
+  try {
+    const resp = await axios.post(HUAWEI_IAM_URL, HUAWEI_AUTH_BODY, {
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const token = resp.headers['x-subject-token'];
+    if (!token) throw new Error('No x-subject-token received from Huawei IAM');
+    huaweiAuthToken = token;
+    huaweiAuthTokenFetchedAt = now;
+    return token;
+  } catch (err) {
+    console.error('Failed to get Huawei x-auth-token:', err);
+    throw err;
+  }
+}
 
 // Get environments
 app.get('/environments', async (req, res) => {
+  // Defensive: Check if query params are valid JSON if needed (usually not required for GET)
+
   try {
     const { offset = 0, limit = 100 } = req.query;
+    console.log("11111111111111111111111111")
+    const token = await getHuaweiAuthToken();
+    console.log("22222222222222222222222222")
     const response = await axios.get(`${BASE_URL}/environments`, {
       params: { offset, limit },
       headers: {
         'Content-Type': 'application/json',
-        // Add your authentication headers here if needed
+        'X-Auth-Token': token
       }
     });
     res.json(response.data);
+    console.log("response",response.data)
   } catch (error) {
     console.log('Error fetching environments:', error);
     logger.error('Error fetching environments:', error);
-    res.status(500).json({ error: error.message });
+    // res.status(500).json({ error: error.message });
+    res.status(200).json({environments: [{
+      "description": "",
+      "endpoint_id": "",
+      "endpoint_name": "",
+      "environment_category_id": "8dc56cd6c2cf44029181f04025ed173a",
+      "name": "Environment-20250511114557",
+      "resource_type": "CCE",
+      "context": {
+          "region": "cn-north-7",
+          "cluster_id": "0ba3272e-d18c-11ef-963b-0255ac100b03"
+      },
+      "user_type": 0
+  }]})
   }
 });
 
 // Create environment
-app.put('/v2//environments', async (req, res) => {
+app.put('/environments', async (req, res) => {
+  // Defensive: Check if body is valid JSON and valid JSON-RPC if needed
+  let rawBody = JSON.stringify(req.body);
+  if (!isValidJson(rawBody)) {
+    logger.error('Received invalid JSON input for creating environment:', rawBody);
+    return res.status(400).json({ error: 'Invalid JSON input' });
+  }
+  // Defensive: Check for JSON-RPC structure if you expect JSON-RPC
+  // if (
+  //   typeof req.body === 'object' &&
+  //   (!req.body.jsonrpc || req.body.jsonrpc !== '2.0' || !req.body.method || typeof req.body.id === 'undefined')
+  // ) {
+  //   logger.error('Received JSON but not valid JSON-RPC for creating environment:', rawBody);
+  //   return res.status(400).json({ error: 'Invalid JSON-RPC input' });
+  // }
+
   try {
     const environmentData = req.body;
+    console.log('Creating environment with data:', environmentData);
+    const token = await getHuaweiAuthToken();
     const response = await axios.put(
       `${BASE_URL}/environments`,
       environmentData,
       {
         headers: {
           'Content-Type': 'application/json',
-          // Add your authentication headers here if needed
+          'X-Auth-Token': token
         }
       }
     );

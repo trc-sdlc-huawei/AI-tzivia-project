@@ -23,7 +23,10 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Handle incoming messages
     socket.on('message', (data) => {
-        addMessage(data.sender, data.text, data.timestamp);
+        // Only add messages from the server if they are not from the current user
+        if (data.sender !== 'user') {
+            addMessage(data.sender, data.text, data.timestamp);
+        }
     });
     
     // Handle errors

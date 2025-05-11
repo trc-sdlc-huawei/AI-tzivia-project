@@ -1,0 +1,18 @@
+# Cascade Project Configuration for Huawei CodeArts MCP Server
+
+[project]
+name = "huawei-codearts-mcp-server"
+description = "Mock MCP server for Huawei CodeArts integration, providing environment management tools."
+entry = "server.js"
+port = 3000
+
+[commands]
+start = "npm start"
+dev = "npm run dev"
+
+[api]
+# Optionally, describe endpoints for auto-discovery
+# endpoints = ["/environments", "/v2//environments"]
+
+[docs]
+readme = "README.md"
