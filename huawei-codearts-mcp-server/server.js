@@ -251,20 +251,20 @@ app.get('/environments', async (req, res) => {
   } catch (error) {
     console.log('Error fetching environments:', error);
     logger.error('Error fetching environments:', error);
-    // res.status(500).json({ error: error.message });
-    res.status(200).json({environments: [{
-      "description": "",
-      "endpoint_id": "",
-      "endpoint_name": "",
-      "environment_category_id": "8dc56cd6c2cf44029181f04025ed173a",
-      "name": "Environment-20250511114557",
-      "resource_type": "CCE",
-      "context": {
-          "region": "cn-north-7",
-          "cluster_id": "0ba3272e-d18c-11ef-963b-0255ac100b03"
-      },
-      "user_type": 0
-  }]})
+    res.status(500).json({ error: error.message });
+    // res.status(200).json({environments: [{
+    //     "description": "",
+    //     "endpoint_id": "",
+    //     "endpoint_name": "",
+    //     "environment_category_id": "8dc56cd6c2cf44029181f04025ed173a",
+    //     "name": "Environment-20250511114557",
+    //     "resource_type": "CCE",
+    //     "context": {
+    //         "region": "cn-north-7",
+    //         "cluster_id": "0ba3272e-d18c-11ef-963b-0255ac100b03"
+    //     },
+    //     "user_type": 0
+    // }]})
   }
 });
 

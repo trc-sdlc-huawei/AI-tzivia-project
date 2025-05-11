@@ -222,11 +222,43 @@ User message: "${message}"`;
             } catch (err) {
               mcpError = `Error executing tool: ${err.message}`;
             }
-            io.emit('message', {
-              sender: 'ai',
-              text: mcpError ? `MCP Error: ${mcpError}` : `MCP Tool Result: ${JSON.stringify(mcpResult, null, 2)}`,
-              timestamp: new Date().toISOString()
-            });
+
+            // Instead of sending raw tool result to user, send it to LLM for post-processing
+            if (openai) {
+              const llmPrompt = `User message: "${message}"
+Tool used: ${toolName}
+Tool result (JSON): ${JSON.stringify(mcpResult)}
+\nBased on the user's original request and the tool result, provide the most helpful, concise response. If the user asked for a summary or count, do that instead of just repeating the tool output.`;
+              try {
+                const completion = await openai.chat.completions.create({
+                  model: 'gpt-3.5-turbo',
+                  messages: [
+                    { role: 'system', content: 'You are a helpful assistant that can use tool results to answer user questions.' },
+                    { role: 'user', content: llmPrompt }
+                  ],
+                  temperature: 0.7,
+                });
+                aiResponse = completion.choices[0].message.content;
+                io.emit('message', {
+                  sender: 'ai',
+                  text: aiResponse,
+                  timestamp: new Date().toISOString()
+                });
+              } catch (llmError) {
+                logger.error('Error in LLM post-processing of tool result:', llmError);
+                io.emit('message', {
+                  sender: 'ai',
+                  text: mcpError ? `MCP Error: ${mcpError}` : `MCP Tool Result: ${JSON.stringify(mcpResult, null, 2)}`,
+                  timestamp: new Date().toISOString()
+                });
+              }
+            } else {
+              io.emit('message', {
+                sender: 'ai',
+                text: mcpError ? `MCP Error: ${mcpError}` : `MCP Tool Result: ${JSON.stringify(mcpResult, null, 2)}`,
+                timestamp: new Date().toISOString()
+              });
+            }
           } else {
             if (!shouldRunTool) {
               logger.info('No MCP tool detected for message. Forwarding to LLM.');
