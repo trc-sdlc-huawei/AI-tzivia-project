@@ -214,6 +214,50 @@ User message: "${message}"`;
           }
 
           console.log('Before tool execution: shouldRunTool:', shouldRunTool, 'toolName:', toolName, 'mcpClient.connected:', mcpClient.connected);
+          // Tool parameter schemas
+          const TOOL_SCHEMAS = {
+            create_environment: {
+              required: ['name', 'resource_type', 'context'],
+              descriptions: {
+                name: 'The name of the environment',
+                resource_type: 'The type of resource (e.g., CCE)',
+                context: 'Context object with region, cluster_id, etc.'
+              }
+            },
+            get_environments: {
+              required: [],
+              descriptions: {}
+            },
+            create_loop: {
+              required: ['loop_name', 'parameters'],
+              descriptions: {
+                loop_name: 'The name of the loop',
+                parameters: 'Parameters for the loop'
+              }
+            },
+            run_code: {
+              required: ['code'],
+              descriptions: {
+                code: 'The code to run'
+              }
+            }
+          };
+
+          if (shouldRunTool && mcpClient && mcpClient.connected) {
+            const missingParams = TOOL_SCHEMAS[toolName].required.filter(param => !toolParams[param]);
+            if (missingParams.length > 0) {
+              const missingParamsMessage = `Missing required parameters for tool ${toolName}: ${missingParams.join(', ')}`;
+              logger.info(missingParamsMessage);
+              console.log(missingParamsMessage);
+              io.emit('message', {
+                sender: 'ai',
+                text: missingParamsMessage,
+                timestamp: new Date().toISOString()
+              });
+              shouldRunTool = false;
+            }
+          }
+
           if (shouldRunTool && mcpClient && mcpClient.connected) {
             logger.info(`Invoking MCP tool: ${toolName} with params: ${JSON.stringify(toolParams)}`);
             console.log(`Invoking MCP tool: ${toolName} with params:`, toolParams);
