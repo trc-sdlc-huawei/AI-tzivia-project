@@ -32,11 +32,24 @@ class McpClient {
 
   async listTools() {
     try {
-      // Assume MCP server exposes /tools endpoint or similar
+      // Assume MCP server exposes /resources endpoint or similar
       const resp = await axios.get(`${this.baseUrl}/resources`);
-      this.tools = resp.data.tools || [];
+      let tools = [];
+      try {
+        if (typeof resp.data === 'string') {
+          // Try to parse if data is string
+          tools = JSON.parse(resp.data).tools || [];
+        } else if (resp.data && typeof resp.data === 'object') {
+          tools = resp.data.tools || [];
+        }
+      } catch (parseErr) {
+        console.error('[McpClient] Failed to parse /resources response as JSON:', parseErr);
+        tools = [];
+      }
+      this.tools = tools;
       return this.tools;
     } catch (err) {
+      console.error('[McpClient] Error fetching /resources:', err.message);
       throw new Error('Failed to list MCP tools: ' + (err.response?.data?.message || err.message));
     }
   }
@@ -53,31 +66,41 @@ class McpClient {
           break;
         case 'create_environment':
           endpoint = '/environments';
-          method = 'put'; // Changed from 'post' to 'put' to match MCP server
+          method = 'put';
           break;
         case 'create_loop':
-          endpoint = '/loops'; // Adjust if your MCP server uses a different path
-          method = 'post';
-          break;
-        case 'run_code':
-          endpoint = '/run'; // Adjust as needed
+          endpoint = '/loops';
           method = 'post';
           break;
         default:
-          throw new Error('Unknown tool: ' + toolName);
+          throw new Error(`[McpClient] Unknown toolName: ${toolName}`);
       }
       let resp;
       if (method === 'get') {
-        resp = await axios.get(`${this.baseUrl}${endpoint}`, { params });
-      } else 
-      if (method === 'put') {
+        resp = await axios.get(`${this.baseUrl}${endpoint}`);
+      } else if (method === 'put') {
         resp = await axios.put(`${this.baseUrl}${endpoint}`, params);
+      } else {
+        resp = await axios.post(`${this.baseUrl}${endpoint}`, params);
       }
-      return resp.data;
+      let result;
+      try {
+        if (typeof resp.data === 'string') {
+          result = JSON.parse(resp.data);
+        } else {
+          result = resp.data;
+        }
+      } catch (parseErr) {
+        console.error(`[McpClient] Failed to parse response from ${endpoint} as JSON:`, parseErr);
+        result = { error: 'Invalid JSON response from MCP server' };
+      }
+      return result;
     } catch (err) {
-      // Defensive: Handle JSON and connection errors
-      return { status: 'error', message: err.response?.data?.message || err.message };
+      console.error(`[McpClient] Error in executeTool for ${toolName}:`, err.message);
+      return { error: err.message };
     }
+  }
+}
   }
 }
 
