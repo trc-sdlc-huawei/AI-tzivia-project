@@ -187,19 +187,19 @@ const HUAWEI_AUTH_BODY = {
           "password": {
               "user": {
                   "domain": {
-                      "name": "hwstaff_pub_TRCCloudTeam"
+                      "name": ""
                   },
-                  "name": "tzivia_rot",
-                  "password": "Tz214384"
+                  "name": "",
+                  "password": ""
               }
           }
       },
       "scope": {
           "domain": {
-              "name": "hwstaff_pub_TRCCloudTeam" 
+              "name": "" 
           },
           "project": {
-              "name": "ap-southeast-3"
+              "name": "ap--3"
           }
       }
   }
